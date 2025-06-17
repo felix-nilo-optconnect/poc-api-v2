@@ -1,0 +1,36 @@
+service: private-api-lambdas
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: us-west-2
+  stage: dev
+
+functions:
+  generalHandler:
+    handler: handler_general.handler
+
+  myLambdaAuthorizer:
+    handler: handler_authorizer.handler
+
+  secureHandler:
+    handler: handler_secure.handler
+
+outputs:
+  GeneralHandlerArn:
+    Description: ARN of the GeneralHandler Lambda function
+    Value: !GetAtt GeneralHandlerLambdaFunction.Arn
+    Export:
+      Name: ${self:service}-${self:provider.stage}-GeneralHandlerArn
+
+  MyLambdaAuthorizerArn:
+    Description: ARN of the Lambda Authorizer function
+    Value: !GetAtt MyLambdaAuthorizerLambdaFunction.Arn
+    Export:
+      Name: ${self:service}-${self:provider.stage}-MyLambdaAuthorizerArn
+
+  SecureHandlerArn:
+    Description: ARN of the SecureHandler Lambda function
+    Value: !GetAtt SecureHandlerLambdaFunction.Arn
+    Export:
+      Name: ${self:service}-${self:provider.stage}-SecureHandlerArn
