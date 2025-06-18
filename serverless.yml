@@ -1,0 +1,211 @@
+service: private-api
+
+provider:
+  name: aws
+  runtime: python3.12
+  region: us-west-2
+  stage: dev
+
+functions:
+  generalHandler:
+    handler: handler_general.handler
+
+  myLambdaAuthorizer:
+    handler: handler_authorizer.handler
+
+  secureHandler:
+    handler: handler_secure.handler
+
+resources:
+  Resources:
+    ApiGatewayRestApi:
+      Type: AWS::ApiGateway::RestApi
+      Properties:
+        Name: ${self:service}-${self:provider.stage}
+        EndpointConfiguration:
+          Types:
+            - PRIVATE
+          VpcEndpointIds:
+            - ${self:custom.vpcEndpointId}
+        Policy:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal: "*"
+              Action: execute-api:Invoke
+              Resource: execute-api:/*
+              Condition:
+                StringEquals:
+                  aws:sourceVpce: ${self:custom.vpcEndpointId}
+
+    ApiKey:
+      Type: AWS::ApiGateway::ApiKey
+      Properties:
+        Name: ${self:service}-${self:provider.stage}-key
+        Description: API Key for private API
+        Enabled: true
+
+    UsagePlan:
+      Type: AWS::ApiGateway::UsagePlan
+      DependsOn: ApiGatewayDeployment
+      Properties:
+        UsagePlanName: ${self:service}-${self:provider.stage}-usage-plan
+        Description: Usage plan for private API
+        ApiStages:
+          - ApiId: !Ref ApiGatewayRestApi
+            Stage: ${self:provider.stage}
+
+    UsagePlanKey:
+      Type: AWS::ApiGateway::UsagePlanKey
+      DependsOn: UsagePlan
+      Properties:
+        KeyId: !Ref ApiKey
+        KeyType: API_KEY
+        UsagePlanId: !Ref UsagePlan
+
+    CustomAuthorizer:
+      Type: AWS::ApiGateway::Authorizer
+      Properties:
+        Name: lambda-authorizer
+        RestApiId: !Ref ApiGatewayRestApi
+        Type: TOKEN
+        AuthorizerUri: !Sub
+          - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${MyLambdaAuthorizerLambdaFunction.Arn}/invocations
+          - MyLambdaAuthorizerLambdaFunction: !Ref MyLambdaAuthorizerLambdaFunction
+        AuthorizerCredentials: !GetAtt ApiGatewayAuthorizerRole.Arn
+        IdentitySource: method.request.header.Authorization
+
+    ApiGatewayAuthorizerRole:
+      Type: AWS::IAM::Role
+      Properties:
+        AssumeRolePolicyDocument:
+          Version: '2012-10-17'
+          Statement:
+            - Effect: Allow
+              Principal:
+                Service: apigateway.amazonaws.com
+              Action: sts:AssumeRole
+        Policies:
+          - PolicyName: InvokeLambda
+            PolicyDocument:
+              Version: '2012-10-17'
+              Statement:
+                - Effect: Allow
+                  Action: lambda:InvokeFunction
+                  Resource: !GetAtt MyLambdaAuthorizerLambdaFunction.Arn
+
+    PublicGetResource:
+      Type: AWS::ApiGateway::Resource
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+        PathPart: public-get
+
+    PublicGetMethod:
+      Type: AWS::ApiGateway::Method
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ResourceId: !Ref PublicGetResource
+        HttpMethod: GET
+        AuthorizationType: NONE
+        Integration:
+          Type: AWS_PROXY
+          IntegrationHttpMethod: POST
+          Uri: !Sub
+            - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GeneralHandlerLambdaFunction.Arn}/invocations
+            - GeneralHandlerLambdaFunction: !Ref GeneralHandlerLambdaFunction
+
+    AuthGetResource:
+      Type: AWS::ApiGateway::Resource
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ParentId: !GetAtt ApiGatewayRestApi.RootResourceId
+        PathPart: auth-get
+
+    AuthGetMethod:
+      Type: AWS::ApiGateway::Method
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ResourceId: !Ref AuthGetResource
+        HttpMethod: GET
+        AuthorizationType: CUSTOM
+        AuthorizerId: !Ref CustomAuthorizer
+        Integration:
+          Type: AWS_PROXY
+          IntegrationHttpMethod: POST
+          Uri: !Sub
+            - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${SecureHandlerLambdaFunction.Arn}/invocations
+            - SecureHandlerLambdaFunction: !Ref SecureHandlerLambdaFunction
+
+    RootGetMethod:
+      Type: AWS::ApiGateway::Method
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        ResourceId: !GetAtt ApiGatewayRestApi.RootResourceId
+        HttpMethod: GET
+        AuthorizationType: NONE
+        ApiKeyRequired: true
+        Integration:
+          Type: AWS_PROXY
+          IntegrationHttpMethod: POST
+          Uri: !Sub
+            - arn:aws:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${GeneralHandlerLambdaFunction.Arn}/invocations
+            - GeneralHandlerLambdaFunction: !Ref GeneralHandlerLambdaFunction
+
+    GeneralHandlerPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref GeneralHandlerLambdaFunction
+        Action: lambda:InvokeFunction
+        Principal: apigateway.amazonaws.com
+        SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*"
+
+    SecureHandlerPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref SecureHandlerLambdaFunction
+        Action: lambda:InvokeFunction
+        Principal: apigateway.amazonaws.com
+        SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/*/*"
+
+    AuthorizerPermission:
+      Type: AWS::Lambda::Permission
+      Properties:
+        FunctionName: !Ref MyLambdaAuthorizerLambdaFunction
+        Action: lambda:InvokeFunction
+        Principal: apigateway.amazonaws.com
+        SourceArn: !Sub "arn:aws:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiGatewayRestApi}/authorizers/*"
+
+    ApiGatewayDeployment:
+      Type: AWS::ApiGateway::Deployment
+      DependsOn:
+        - RootGetMethod
+        - PublicGetMethod
+        - AuthGetMethod
+      Properties:
+        RestApiId: !Ref ApiGatewayRestApi
+        StageName: ${self:provider.stage}
+        Description: !Sub "Deployment-${AWS::StackName}-${AWS::Region}"
+
+  Outputs:
+    ApiGatewayRestApiId:
+      Description: API Gateway REST API ID
+      Value: !Ref ApiGatewayRestApi
+      Export:
+        Name: ${self:service}-${self:provider.stage}-ApiId
+
+    ApiGatewayRestApiUrl:
+      Description: API Gateway endpoint URL
+      Value: !Sub "https://${ApiGatewayRestApi}.execute-api.${AWS::Region}.amazonaws.com/${self:provider.stage}"
+      Export:
+        Name: ${self:service}-${self:provider.stage}-ApiUrl
+
+    ApiKeyId:
+      Description: API Key ID
+      Value: !Ref ApiKey
+      Export:
+        Name: ${self:service}-${self:provider.stage}-ApiKeyId
+
+
+custom:
+  vpcEndpointId: vpce-09c1f38f298498637
